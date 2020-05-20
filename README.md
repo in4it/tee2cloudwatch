@@ -1,5 +1,5 @@
 # tee2cloudwatch
-Send your output data of your commandline to cloudwatch logs. Works well in combination with AWS UserData scripts. You can send the output data of your initialization scripts straight to cloudwatch logs instead of writing them in /var/log.
+Send your output data of your commands to cloudwatch logs. Works well in combination with AWS UserData scripts. You can send the output data of your initialization scripts straight to cloudwatch logs instead of writing them in /var/log.
 
 # Usage
 ```
