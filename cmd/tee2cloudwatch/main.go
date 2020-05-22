@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -38,76 +40,104 @@ func main() {
 		usage("Missing log group name")
 	}
 
-	logMessages := make(chan string)
-
-	// initialize aws sdk
 	sess := session.New(&aws.Config{Region: aws.String(region)})
-	svc := cloudwatchlogs.New(sess)
+	logEvent := &LogEvent{
+		logMessages: make(chan string),
+		sess:        sess,
+		svc:         cloudwatchlogs.New(sess),
+		sigs:        make(chan os.Signal, 1),
+	}
 
-	logStreamName, err := createLogStream(svc, logGroupName)
+	signal.Notify(logEvent.sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	// handle signal
+	go logEvent.handleSignals()
+
+	// create log stream
+	logStreamName, err := logEvent.createLogStream(logGroupName)
 	if err != nil {
 		panic(err)
 	}
 
+	logEvent.input = &cloudwatchlogs.PutLogEventsInput{
+		LogGroupName:  aws.String(logGroupName),
+		LogStreamName: aws.String(logStreamName),
+	}
+
+	// capture stdin
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			out := scanner.Text()
-			logMessages <- out
+			logEvent.logMessages <- out
 		}
 
 		if err := scanner.Err(); err != nil {
 			log.Println(err)
 		}
-		close(logMessages)
+		close(logEvent.logMessages)
 	}()
 
-	var token string
-	input := &cloudwatchlogs.PutLogEventsInput{
-		LogGroupName:  aws.String(logGroupName),
-		LogStreamName: aws.String(logStreamName),
-	}
-
-	start := time.Now()
-
-	for elem := range logMessages {
-		fmt.Println(elem)
-
-		if token != "" {
-			input.SequenceToken = aws.String(token)
-		}
-		input.LogEvents = append(input.LogEvents, &cloudwatchlogs.InputLogEvent{
-			Message:   aws.String(elem),
-			Timestamp: aws.Int64(time.Now().UnixNano() / int64(time.Millisecond)),
-		})
-		if time.Since(start) > time.Duration(1*time.Second) {
-			token = writeLogEvent(svc, input)
-			input.LogEvents = []*cloudwatchlogs.InputLogEvent{}
-			start = time.Now()
-		}
-	}
-	if len(input.LogEvents) > 0 {
-		_ = writeLogEvent(svc, input)
-	}
-
-	os.Exit(0)
-
+	logEvent.readLoop()
 }
 
-func writeLogEvent(svc *cloudwatchlogs.CloudWatchLogs, input *cloudwatchlogs.PutLogEventsInput) string {
-	result, err := svc.PutLogEvents(input)
+type LogEvent struct {
+	logMessages chan string
+	sess        *session.Session
+	svc         *cloudwatchlogs.CloudWatchLogs
+	sigs        chan os.Signal
+	token       string
+	input       *cloudwatchlogs.PutLogEventsInput
+}
+
+func (l *LogEvent) writeLogEvent() string {
+	result, err := l.svc.PutLogEvents(l.input)
 	if err != nil {
 		panic(err)
 	}
-	//fmt.Printf("Wrote log event: %+v\n", result)
+	fmt.Printf("Wrote log event: %+v\n", result)
 	return aws.StringValue(result.NextSequenceToken)
 }
 
-func createLogStream(svc *cloudwatchlogs.CloudWatchLogs, logGroupName string) (string, error) {
+func (l *LogEvent) createLogStream(logGroupName string) (string, error) {
 	logStreamName := uuid.New().String()
-	_, err := svc.CreateLogStream(&cloudwatchlogs.CreateLogStreamInput{
+	_, err := l.svc.CreateLogStream(&cloudwatchlogs.CreateLogStreamInput{
 		LogGroupName:  aws.String(logGroupName),
 		LogStreamName: aws.String(logStreamName),
 	})
 	return logStreamName, err
+}
+
+func (l *LogEvent) handleSignals() {
+	sig := <-l.sigs
+	fmt.Printf("%s", sig)
+	l.input.LogEvents = append(l.input.LogEvents, &cloudwatchlogs.InputLogEvent{
+		Message:   aws.String(fmt.Sprintf("%s", sig)),
+		Timestamp: aws.Int64(time.Now().UnixNano() / int64(time.Millisecond)),
+	})
+	_ = l.writeLogEvent()
+	os.Exit(0)
+}
+func (l *LogEvent) readLoop() {
+	start := time.Now()
+
+	for elem := range l.logMessages {
+		fmt.Println(elem)
+
+		if l.token != "" {
+			l.input.SequenceToken = aws.String(l.token)
+		}
+		l.input.LogEvents = append(l.input.LogEvents, &cloudwatchlogs.InputLogEvent{
+			Message:   aws.String(elem),
+			Timestamp: aws.Int64(time.Now().UnixNano() / int64(time.Millisecond)),
+		})
+		if time.Since(start) > time.Duration(1*time.Second) {
+			l.token = l.writeLogEvent()
+			l.input.LogEvents = []*cloudwatchlogs.InputLogEvent{}
+			start = time.Now()
+		}
+	}
+	if len(l.input.LogEvents) > 0 {
+		_ = l.writeLogEvent()
+	}
 }
