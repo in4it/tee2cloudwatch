@@ -91,12 +91,15 @@ type LogEvent struct {
 }
 
 func (l *LogEvent) writeLogEvent() string {
-	result, err := l.svc.PutLogEvents(l.input)
-	if err != nil {
-		panic(err)
+	if len(l.input.LogEvents) > 0 {
+		result, err := l.svc.PutLogEvents(l.input)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Wrote log event: %+v\n", result)
+		return aws.StringValue(result.NextSequenceToken)
 	}
-	fmt.Printf("Wrote log event: %+v\n", result)
-	return aws.StringValue(result.NextSequenceToken)
+	return aws.StringValue(l.input.SequenceToken)
 }
 
 func (l *LogEvent) createLogStream(logGroupName string) (string, error) {
@@ -127,10 +130,12 @@ func (l *LogEvent) readLoop() {
 		if l.token != "" {
 			l.input.SequenceToken = aws.String(l.token)
 		}
-		l.input.LogEvents = append(l.input.LogEvents, &cloudwatchlogs.InputLogEvent{
-			Message:   aws.String(elem),
-			Timestamp: aws.Int64(time.Now().UnixNano() / int64(time.Millisecond)),
-		})
+		if len(elem) > 0 {
+			l.input.LogEvents = append(l.input.LogEvents, &cloudwatchlogs.InputLogEvent{
+				Message:   aws.String(elem),
+				Timestamp: aws.Int64(time.Now().UnixNano() / int64(time.Millisecond)),
+			})
+		}
 		if time.Since(start) > time.Duration(1*time.Second) {
 			l.token = l.writeLogEvent()
 			l.input.LogEvents = []*cloudwatchlogs.InputLogEvent{}
