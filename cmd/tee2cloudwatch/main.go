@@ -26,10 +26,12 @@ func main() {
 	var (
 		logGroupName string
 		region       string
+		debug        bool
 	)
 
 	flag.StringVar(&logGroupName, "logGroup", "", "log group name")
 	flag.StringVar(&region, "region", "", "region")
+	flag.BoolVar(&debug, "debug", false, "output debug information")
 
 	flag.Parse()
 
@@ -46,6 +48,7 @@ func main() {
 		sess:        sess,
 		svc:         cloudwatchlogs.New(sess),
 		sigs:        make(chan os.Signal, 1),
+		debug:       debug,
 	}
 
 	signal.Notify(logEvent.sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -88,6 +91,7 @@ type LogEvent struct {
 	sigs        chan os.Signal
 	token       string
 	input       *cloudwatchlogs.PutLogEventsInput
+	debug       bool
 }
 
 func (l *LogEvent) writeLogEvent() string {
@@ -96,7 +100,9 @@ func (l *LogEvent) writeLogEvent() string {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("Wrote log event: %+v\n", result)
+		if l.debug {
+			fmt.Printf("Wrote log event: %+v\n", result)
+		}
 		return aws.StringValue(result.NextSequenceToken)
 	}
 	return aws.StringValue(l.input.SequenceToken)
